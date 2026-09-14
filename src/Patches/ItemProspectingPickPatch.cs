@@ -416,12 +416,15 @@ public static class SystemHighlightBlocksPatch
     {
         try
         {
-            ProspectorsXRayModSystem.ClientApi?.Render.GLDisableDepthTest();
-
-            if (ActiveSurveyClient.Instance?.DisplayMode == DisplayModeType.Wireframe)
+            if (ActiveSurveyClient.Instance?.IsHighlightActive == true)
             {
-                GL.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Line);
-                GL.LineWidth(2.5f);
+                ProspectorsXRayModSystem.ClientApi?.Render.GLDisableDepthTest();
+
+                if (ActiveSurveyClient.Instance.DisplayMode == DisplayModeType.Wireframe)
+                {
+                    GL.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Line);
+                    GL.LineWidth(2.5f);
+                }
             }
         }
         catch { }
@@ -432,12 +435,15 @@ public static class SystemHighlightBlocksPatch
     {
         try
         {
-            if (ActiveSurveyClient.Instance?.DisplayMode == DisplayModeType.Wireframe)
+            if (ActiveSurveyClient.Instance?.IsHighlightActive == true)
             {
-                GL.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Fill);
-            }
+                if (ActiveSurveyClient.Instance.DisplayMode == DisplayModeType.Wireframe)
+                {
+                    GL.PolygonMode(TriangleFace.FrontAndBack, PolygonMode.Fill);
+                }
 
-            ProspectorsXRayModSystem.ClientApi?.Render.GLEnableDepthTest();
+                ProspectorsXRayModSystem.ClientApi?.Render.GLEnableDepthTest();
+            }
         }
         catch { }
     }
@@ -446,6 +452,18 @@ public static class SystemHighlightBlocksPatch
 [HarmonyPatch]
 public static class BlockHighlightPatch
 {
+    private static FieldInfo? fOrigin;
+    private static FieldInfo? fSize;
+    private static FieldInfo? fAttach;
+    private static FieldInfo? fModelRef;
+    private static bool fieldsCached = false;
+
+    private static readonly MeshData CachedMeshData = new(1024 * 24, 1024 * 36, false, false, true, false);
+    private static readonly Vec3f CachedCenterVec = new();
+    private static readonly BlockPos CachedOrigin = new(0, 0, 0, 0);
+    private static readonly Vec3i CachedModelSize = new(0, 0, 0);
+    private static readonly BlockPos[] CachedAttachPoints = new BlockPos[1] { CachedOrigin };
+
     [HarmonyTargetMethod]
     public static MethodBase? TargetMethod()
     {
@@ -482,19 +500,26 @@ public static class BlockHighlightPatch
                 if (p.Z > maxZ) maxZ = p.Z;
             }
 
-            BlockPos origin = new BlockPos(minX, minY, minZ, 0);
-            Vec3i modelSize = new Vec3i(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1);
+            CachedOrigin.Set(minX, minY, minZ);
+            CachedModelSize.X = maxX - minX + 1;
+            CachedModelSize.Y = maxY - minY + 1;
+            CachedModelSize.Z = maxZ - minZ + 1;
 
-            FieldInfo? fOrigin = __instance.GetType().GetField("origin", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            FieldInfo? fSize = __instance.GetType().GetField("Size", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            FieldInfo? fAttach = __instance.GetType().GetField("attachmentPoints", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            FieldInfo? fModelRef = __instance.GetType().GetField("modelRef", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (!fieldsCached)
+            {
+                Type instType = __instance.GetType();
+                fOrigin = instType.GetField("origin", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                fSize = instType.GetField("Size", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                fAttach = instType.GetField("attachmentPoints", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                fModelRef = instType.GetField("modelRef", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                fieldsCached = true;
+            }
 
-            fOrigin?.SetValue(__instance, origin);
-            fSize?.SetValue(__instance, modelSize);
-            fAttach?.SetValue(__instance, new BlockPos[] { origin });
+            fOrigin?.SetValue(__instance, CachedOrigin);
+            fSize?.SetValue(__instance, CachedModelSize);
+            fAttach?.SetValue(__instance, CachedAttachPoints);
 
-            MeshData intoMesh = new MeshData(positions.Length * 24, positions.Length * 36, false, false, true, false);
+            CachedMeshData.Clear();
             Vec3f sizeVec = new Vec3f(size, size, size);
 
             for (int i = 0; i < positions.Length; i++)
@@ -502,26 +527,30 @@ public static class BlockHighlightPatch
                 BlockPos p = positions[i];
                 int col = (colors != null && i < colors.Length) ? colors[i] : OreColorHelper.DefaultColor;
 
-                Vec3f center = new Vec3f(
-                    p.X - origin.X + 0.5f,
-                    p.Y - origin.Y + 0.5f,
-                    p.Z - origin.Z + 0.5f
+                CachedCenterVec.Set(
+                    p.X - minX + 0.5f,
+                    p.Y - minY + 0.5f,
+                    p.Z - minZ + 0.5f
                 );
 
                 foreach (BlockFacing face in BlockFacing.ALLFACES)
                 {
-                    ModelCubeUtilExt.AddFaceSkipTex(intoMesh, face, center, sizeVec, col, 1f);
+                    ModelCubeUtilExt.AddFaceSkipTex(CachedMeshData, face, CachedCenterVec, sizeVec, col, 1f);
                 }
             }
 
-            dynamic clientGame = game;
-            MeshRef oldRef = (MeshRef)fModelRef?.GetValue(__instance)!;
+            MeshRef? oldRef = fModelRef?.GetValue(__instance) as MeshRef;
             oldRef?.Dispose();
 
-            MeshRef newRef = clientGame.Platform.UploadMesh(intoMesh);
+            MeshRef? newRef = ProspectorsXRayModSystem.ClientApi?.Render.UploadMesh(CachedMeshData);
+            if (newRef == null)
+            {
+                dynamic clientGame = game;
+                newRef = clientGame.Platform.UploadMesh(CachedMeshData);
+            }
             fModelRef?.SetValue(__instance, newRef);
 
-            return false; // Handled with custom size!
+            return false; // Handled with custom size and zero garbage!
         }
         catch (Exception ex)
         {

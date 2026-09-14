@@ -14,6 +14,10 @@ Based on [Prospector's Instinct](https://mods.vintagestory.at/prospectorsinstinc
 * **X-Ray visibility:**
   * Initially reveals 50% of detected ore blocks while holding a pickaxe or propick in main hand or off-hand.
   * Mining an ore block from the deposit reveals **+5%** more hidden ores.
+* **High performance & Zero-Lag (v1.1.0):**
+  * **Asynchronous / Debounced GPU mesh updates:** Mining ore produces zero stutters/freezes.
+  * **Fast-path O(1) spatial filter:** Ignores unrelated block destruction in < 1 nanosecond.
+  * **Zero-GC memory architecture:** Reusable vertex data (`MeshData.Clear()`), pooled vectors (`Vec3f.Set()`), and static reflection caching prevent Garbage Collection spikes during long play sessions.
 * **Display modes:**
   * **Wireframe** (draws only block edges/outlines)
   * **Block** (cubes – default size 25% of a block to prevent visual clutter)

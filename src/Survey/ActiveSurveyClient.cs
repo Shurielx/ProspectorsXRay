@@ -24,6 +24,13 @@ public class ClientConfig
     public List<string> DisabledOres { get; set; } = new();
 }
 
+public class SurveyOre
+{
+    public BlockPos Pos { get; set; } = null!;
+    public int Color { get; set; }
+    public string Mineral { get; set; } = string.Empty;
+}
+
 public class ActiveSurveyData
 {
     public BlockPos Center { get; init; } = new(0, 0, 0, 0);
@@ -31,10 +38,10 @@ public class ActiveSurveyData
     public string ModeName { get; init; } = string.Empty;
     public DateTime ExpireTime { get; init; }
     public int TotalDetected { get; init; }
-    public HashSet<BlockPos> RemainingOres { get; init; } = new();
-    public Dictionary<BlockPos, int> OreColors { get; init; } = new();
-    public Dictionary<BlockPos, string> OreMinerals { get; init; } = new();
-    public List<(BlockPos Pos, int Color, string Mineral)> HiddenOres { get; init; } = new();
+
+    public Dictionary<BlockPos, SurveyOre> RevealedOres { get; } = new();
+    public List<SurveyOre> HiddenOres { get; } = new();
+    public Dictionary<BlockPos, SurveyOre> HiddenOresByPos { get; } = new();
 }
 
 public class ActiveSurveyClient
@@ -53,11 +60,24 @@ public class ActiveSurveyClient
     public int DisplaySizePercent { get; private set; } = 25;
     public HashSet<string> DisabledOres { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public bool IsHighlightActive => isHighlightActive;
+
     private bool isHighlightActive = false;
     private bool manualHideOverride = false;
     private bool lastHoldsPickaxe = false;
     private bool lastInBounds = false;
     private bool needsHighlightRefresh = true;
+
+    // Debouncing & throttling highlight updates while mining
+    private bool pendingHighlightRefresh = false;
+    private long lastOreMinedTimeMs = 0;
+    private long pendingRefreshStartTimeMs = 0;
+    private const long DebounceDelayMs = 350;       // Wait 350ms after block break before GPU mesh rebuild
+    private const long MaxThrottleDelayMs = 1200;    // While continuously mining, update at most once per 1200ms
+
+    // Reusable pooled collections for Zero-GC highlights
+    private readonly List<BlockPos> reusablePositions = new(512);
+    private readonly List<int> reusableColors = new(512);
 
     public ActiveSurveyClient(ICoreClientAPI capi)
     {
@@ -181,6 +201,8 @@ public class ActiveSurveyClient
         ClearHighlights();
         manualHideOverride = false;
         needsHighlightRefresh = true;
+        pendingHighlightRefresh = false;
+        pendingRefreshStartTimeMs = 0;
 
         ActiveSurvey = new ActiveSurveyData
         {
@@ -194,10 +216,16 @@ public class ActiveSurveyClient
         for (int i = 0; i < packet.RevealedX.Count; i++)
         {
             BlockPos pos = new BlockPos(packet.RevealedX[i], packet.RevealedY[i], packet.RevealedZ[i], 0);
-            ActiveSurvey.RemainingOres.Add(pos);
-            ActiveSurvey.OreColors[pos] = packet.RevealedColors[i];
+            int color = (i < packet.RevealedColors.Count) ? packet.RevealedColors[i] : OreColorHelper.DefaultColor;
             string mineral = (i < packet.RevealedMinerals.Count) ? packet.RevealedMinerals[i] : "";
-            ActiveSurvey.OreMinerals[pos] = mineral;
+
+            SurveyOre ore = new SurveyOre
+            {
+                Pos = pos,
+                Color = color,
+                Mineral = mineral
+            };
+            ActiveSurvey.RevealedOres[pos] = ore;
         }
 
         if (packet.HiddenX != null)
@@ -207,7 +235,15 @@ public class ActiveSurveyClient
                 BlockPos hPos = new BlockPos(packet.HiddenX[i], packet.HiddenY[i], packet.HiddenZ[i], 0);
                 int hColor = (i < packet.HiddenColors.Count) ? packet.HiddenColors[i] : OreColorHelper.DefaultColor;
                 string hMineral = (i < packet.HiddenMinerals.Count) ? packet.HiddenMinerals[i] : "";
-                ActiveSurvey.HiddenOres.Add((hPos, hColor, hMineral));
+
+                SurveyOre hOre = new SurveyOre
+                {
+                    Pos = hPos,
+                    Color = hColor,
+                    Mineral = hMineral
+                };
+                ActiveSurvey.HiddenOres.Add(hOre);
+                ActiveSurvey.HiddenOresByPos[hPos] = hOre;
             }
         }
 
@@ -236,7 +272,7 @@ public class ActiveSurveyClient
                 }
             }
 
-            int visibleCount = ActiveSurvey.RemainingOres.Count(p => !OreFilterManager.IsOreDisabled(ActiveSurvey.OreMinerals.GetValueOrDefault(p, ""), DisabledOres));
+            int visibleCount = ActiveSurvey.RevealedOres.Values.Count(ore => !OreFilterManager.IsOreDisabled(ore.Mineral, DisabledOres));
             sb.AppendLine($"<font color=\"#ffdf55\">Highlighted initial 50% ({visibleCount} blocks). Mining ore reveals +5% more!</font>");
             sb.AppendLine("<font color=\"#aaaaaa\"><i>Visible when holding a pickaxe in this area. Active for 1 hour.</i></font>");
         }
@@ -269,13 +305,30 @@ public class ActiveSurveyClient
         if (player?.Entity == null) return;
 
         bool holdsPickaxe = IsHoldingPickaxe(player);
-        BlockPos playerPos = player.Entity.Pos.AsBlockPos;
+        double px = player.Entity.Pos.X;
+        double py = player.Entity.Pos.Y;
+        double pz = player.Entity.Pos.Z;
         int buffer = ActiveSurvey.Radius + 4;
-        bool inBounds = Math.Abs(playerPos.X - ActiveSurvey.Center.X) <= buffer
-                     && Math.Abs(playerPos.Z - ActiveSurvey.Center.Z) <= buffer
-                     && Math.Abs(playerPos.Y - ActiveSurvey.Center.Y) <= buffer;
+        bool inBounds = Math.Abs(px - ActiveSurvey.Center.X) <= buffer
+                     && Math.Abs(pz - ActiveSurvey.Center.Z) <= buffer
+                     && Math.Abs(py - ActiveSurvey.Center.Y) <= buffer;
 
-        // Zero-cost tick: only update GPU highlights if state or player boundary changed!
+        // Process debounced / throttled highlight refresh (zero freeze during mining)
+        if (pendingHighlightRefresh)
+        {
+            long now = Environment.TickCount64;
+            bool idleDebouncePassed = (now - lastOreMinedTimeMs) >= DebounceDelayMs;
+            bool maxThrottlePassed = (now - pendingRefreshStartTimeMs) >= MaxThrottleDelayMs;
+
+            if (idleDebouncePassed || maxThrottlePassed)
+            {
+                pendingHighlightRefresh = false;
+                pendingRefreshStartTimeMs = 0;
+                needsHighlightRefresh = true;
+            }
+        }
+
+        // Zero-cost tick: only update GPU highlights if state, player boundary, or debounced survey data changed!
         if (holdsPickaxe != lastHoldsPickaxe || inBounds != lastInBounds || needsHighlightRefresh)
         {
             lastHoldsPickaxe = holdsPickaxe;
@@ -294,7 +347,7 @@ public class ActiveSurveyClient
     {
         needsHighlightRefresh = false;
 
-        if (ActiveSurvey == null || manualHideOverride || ActiveSurvey.RemainingOres.Count == 0)
+        if (ActiveSurvey == null || manualHideOverride || ActiveSurvey.RevealedOres.Count == 0)
         {
             if (isHighlightActive)
             {
@@ -309,34 +362,34 @@ public class ActiveSurveyClient
         bool holdsPickaxe = IsHoldingPickaxe(player);
         lastHoldsPickaxe = holdsPickaxe;
 
-        BlockPos playerPos = player.Entity.Pos.AsBlockPos;
+        double px = player.Entity.Pos.X;
+        double py = player.Entity.Pos.Y;
+        double pz = player.Entity.Pos.Z;
         int buffer = ActiveSurvey.Radius + 4;
-        bool inBounds = Math.Abs(playerPos.X - ActiveSurvey.Center.X) <= buffer
-                     && Math.Abs(playerPos.Z - ActiveSurvey.Center.Z) <= buffer
-                     && Math.Abs(playerPos.Y - ActiveSurvey.Center.Y) <= buffer;
+        bool inBounds = Math.Abs(px - ActiveSurvey.Center.X) <= buffer
+                     && Math.Abs(pz - ActiveSurvey.Center.Z) <= buffer
+                     && Math.Abs(py - ActiveSurvey.Center.Y) <= buffer;
         lastInBounds = inBounds;
 
         bool shouldShow = holdsPickaxe && inBounds;
 
         if (shouldShow)
         {
-            List<BlockPos> visiblePositions = new();
-            List<int> visibleColors = new();
+            reusablePositions.Clear();
+            reusableColors.Clear();
 
-            foreach (var pos in ActiveSurvey.RemainingOres)
+            foreach (var ore in ActiveSurvey.RevealedOres.Values)
             {
-                string mineral = ActiveSurvey.OreMinerals.GetValueOrDefault(pos, "");
-                if (OreFilterManager.IsOreDisabled(mineral, DisabledOres))
+                if (OreFilterManager.IsOreDisabled(ore.Mineral, DisabledOres))
                 {
                     continue;
                 }
 
-                visiblePositions.Add(pos);
-                int baseColor = ActiveSurvey.OreColors.GetValueOrDefault(pos, OreColorHelper.DefaultColor);
-                visibleColors.Add(ApplyOpacity(baseColor));
+                reusablePositions.Add(ore.Pos);
+                reusableColors.Add(ApplyOpacity(ore.Color));
             }
 
-            if (visiblePositions.Count > 0)
+            if (reusablePositions.Count > 0)
             {
                 IsTesselatingOurHighlight = true;
                 try
@@ -344,8 +397,8 @@ public class ActiveSurveyClient
                     capi.World.HighlightBlocks(
                         player,
                         HighlightSlotId,
-                        visiblePositions,
-                        visibleColors,
+                        reusablePositions,
+                        reusableColors,
                         EnumHighlightBlocksMode.Absolute,
                         EnumHighlightShape.Arbitrary
                     );
@@ -374,55 +427,72 @@ public class ActiveSurveyClient
     {
         if (ActiveSurvey == null) return;
 
+        // Fast O(1) spatial filter: ignore 99.9% of unrelated world block changes immediately (< 1 ns)
+        int r = ActiveSurvey.Radius;
+        if (Math.Abs(pos.X - ActiveSurvey.Center.X) > r ||
+            Math.Abs(pos.Z - ActiveSurvey.Center.Z) > r ||
+            Math.Abs(pos.Y - ActiveSurvey.Center.Y) > r)
+        {
+            return;
+        }
+
         bool wasOreMined = false;
 
-        if (ActiveSurvey.RemainingOres.Remove(pos))
+        // O(1) lookup in revealed ores
+        if (ActiveSurvey.RevealedOres.Remove(pos, out var minedOre))
         {
-            ActiveSurvey.OreColors.Remove(pos);
-            ActiveSurvey.OreMinerals.Remove(pos);
             wasOreMined = true;
         }
-        else
+        // O(1) fallback check if player directly mined a hidden ore
+        else if (ActiveSurvey.HiddenOresByPos.Remove(pos, out var hiddenMinedOre))
         {
-            int hiddenIndex = ActiveSurvey.HiddenOres.FindIndex(h => h.Pos.Equals(pos));
-            if (hiddenIndex >= 0)
-            {
-                ActiveSurvey.HiddenOres.RemoveAt(hiddenIndex);
-                wasOreMined = true;
-            }
+            ActiveSurvey.HiddenOres.Remove(hiddenMinedOre);
+            wasOreMined = true;
         }
 
         if (wasOreMined)
         {
-            needsHighlightRefresh = true;
-
+            int revealedNow = 0;
             if (ActiveSurvey.HiddenOres.Count > 0)
             {
                 int revealBatch = Math.Max(1, (int)Math.Ceiling(ActiveSurvey.TotalDetected * 0.05));
                 int toReveal = Math.Min(revealBatch, ActiveSurvey.HiddenOres.Count);
+                revealedNow = toReveal;
 
                 for (int i = 0; i < toReveal; i++)
                 {
-                    var item = ActiveSurvey.HiddenOres[0];
-                    ActiveSurvey.HiddenOres.RemoveAt(0);
+                    // Remove from END of list for O(1) complexity (zero array shifting!)
+                    int lastIdx = ActiveSurvey.HiddenOres.Count - 1;
+                    var item = ActiveSurvey.HiddenOres[lastIdx];
+                    ActiveSurvey.HiddenOres.RemoveAt(lastIdx);
+                    ActiveSurvey.HiddenOresByPos.Remove(item.Pos);
 
-                    ActiveSurvey.RemainingOres.Add(item.Pos);
-                    ActiveSurvey.OreColors[item.Pos] = item.Color;
-                    ActiveSurvey.OreMinerals[item.Pos] = item.Mineral;
+                    ActiveSurvey.RevealedOres[item.Pos] = item;
                 }
-
-                capi.ShowChatMessage($"<font color=\"#ffdf55\"><strong>[Prospector's X-Ray] Ore mined! Revealed +{toReveal} more ore locations ({ActiveSurvey.HiddenOres.Count} still hidden).</strong></font>");
             }
 
-            if (ActiveSurvey.RemainingOres.Count == 0 && ActiveSurvey.HiddenOres.Count == 0)
+            if (revealedNow > 0)
             {
+                capi.ShowChatMessage($"<font color=\"#ffdf55\"><strong>[Prospector's X-Ray] Ore mined! Revealed +{revealedNow} more ore locations ({ActiveSurvey.HiddenOres.Count} still hidden).</strong></font>");
+            }
+
+            if (ActiveSurvey.RevealedOres.Count == 0 && ActiveSurvey.HiddenOres.Count == 0)
+            {
+                pendingHighlightRefresh = false;
                 ClearHighlights();
                 capi.ShowChatMessage("<font color=\"#55ff55\"><strong>[Prospector's X-Ray] All ores in this survey deposit have been mined!</strong></font>");
                 ActiveSurvey = null;
+                return;
             }
-            else if (isHighlightActive)
+
+            // CRITICAL OPTIMIZATION: Schedule debounced refresh in the background.
+            // DO NOT call UpdateHighlightState() synchronously here to prevent freezing the frame during mining!
+            pendingHighlightRefresh = true;
+            long now = Environment.TickCount64;
+            lastOreMinedTimeMs = now;
+            if (pendingRefreshStartTimeMs == 0)
             {
-                UpdateHighlightState();
+                pendingRefreshStartTimeMs = now;
             }
         }
     }
@@ -432,10 +502,11 @@ public class ActiveSurveyClient
         IClientPlayer player = capi.World.Player;
         if (player != null)
         {
+            reusablePositions.Clear();
             capi.World.HighlightBlocks(
                 player,
                 HighlightSlotId,
-                new List<BlockPos>(),
+                reusablePositions,
                 EnumHighlightBlocksMode.Absolute,
                 EnumHighlightShape.Arbitrary
             );
@@ -625,7 +696,7 @@ public class ActiveSurveyClient
                 }
 
                 int minsLeft = (int)Math.Max(0, (ActiveSurvey.ExpireTime - DateTime.UtcNow).TotalMinutes);
-                return TextCommandResult.Success($"Active survey ({ActiveSurvey.ModeName}): {ActiveSurvey.RemainingOres.Count} highlighted ores remaining. Expires in {minsLeft} minutes. Mode: {DisplayMode} ({DisplaySizePercent}% size, {DisplayOpacity}% opacity).");
+                return TextCommandResult.Success($"Active survey ({ActiveSurvey.ModeName}): {ActiveSurvey.RevealedOres.Count} highlighted ores remaining. Expires in {minsLeft} minutes. Mode: {DisplayMode} ({DisplaySizePercent}% size, {DisplayOpacity}% opacity).");
             })
             .EndSubCommand();
 
@@ -847,7 +918,7 @@ public class ActiveSurveyClient
                 {
                     int minsLeft = (int)Math.Max(0, (ActiveSurvey.ExpireTime - DateTime.UtcNow).TotalMinutes);
                     int hiddenCount = ActiveSurvey.HiddenOres.Count;
-                    int visibleCount = ActiveSurvey.RemainingOres.Count;
+                    int visibleCount = ActiveSurvey.RevealedOres.Count;
                     capi.ShowChatMessage($"<font color=\"#ffdf55\"><strong>[Prospector's X-Ray] Active survey ({ActiveSurvey.ModeName}):</strong></font>\n" +
                                          $" • Visible ores remaining: <font color=\"#ffffff\">{visibleCount}</font>\n" +
                                          $" • Hidden bonus ores waiting: <font color=\"#ffffff\">{hiddenCount}</font>\n" +

@@ -76,12 +76,17 @@ public class SurveyEngine
             // Reveal exactly 50% of the found ore locations initially, rest queued as hidden bonuses
             int revealCount = Math.Max(1, (int)Math.Round(allFoundOres.Count * 0.50));
             Random rng = new Random();
-            var shuffled = allFoundOres.OrderBy(_ => rng.Next()).ToList();
-            var selected = shuffled.Take(revealCount).ToList();
-            var hidden = shuffled.Skip(revealCount).ToList();
 
-            foreach (var item in selected)
+            // In-place Fisher-Yates shuffle (zero allocation, O(N))
+            for (int i = allFoundOres.Count - 1; i > 0; i--)
             {
+                int j = rng.Next(i + 1);
+                (allFoundOres[i], allFoundOres[j]) = (allFoundOres[j], allFoundOres[i]);
+            }
+
+            for (int i = 0; i < revealCount; i++)
+            {
+                var item = allFoundOres[i];
                 packet.RevealedX.Add(item.Pos.X);
                 packet.RevealedY.Add(item.Pos.Y);
                 packet.RevealedZ.Add(item.Pos.Z);
@@ -91,8 +96,9 @@ public class SurveyEngine
                 shownCounts[item.MineralName] = shownCounts.GetValueOrDefault(item.MineralName, 0) + 1;
             }
 
-            foreach (var item in hidden)
+            for (int i = revealCount; i < allFoundOres.Count; i++)
             {
+                var item = allFoundOres[i];
                 packet.HiddenX.Add(item.Pos.X);
                 packet.HiddenY.Add(item.Pos.Y);
                 packet.HiddenZ.Add(item.Pos.Z);
