@@ -1,0 +1,14 @@
+{
+  "type": "Code",
+  "modid": "prospectorsxray",
+  "name": "Prospector's X-Ray",
+  "authors": [
+    "Shuriel",
+    "Cornwall Mods"
+  ],
+  "description": "An advanced prospecting assistant featuring 32x32 and 64x64 survey modes, configurable wireframe and mini-block X-Ray outlines through terrain, adjustable block size, dual-pickaxe visibility, dynamic mining reveals (+5%), and smart ore filtering (/ore).",
+  "version": "1.0.0",
+  "dependencies": {
+    "game": "1.22.*"
+  }
+}

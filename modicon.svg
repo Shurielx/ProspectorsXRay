@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#242c38"/>
+      <stop offset="100%" stop-color="#0f1319"/>
+    </radialGradient>
+
+    <!-- Radar Pulse -->
+    <radialGradient id="radar" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00ffff" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#00ffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Steel Head Gradient -->
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="35%" stop-color="#cfd6df"/>
+      <stop offset="70%" stop-color="#707e94"/>
+      <stop offset="100%" stop-color="#3b4452"/>
+    </linearGradient>
+
+    <!-- Wood Shaft Gradient -->
+    <linearGradient id="wood" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a06030"/>
+      <stop offset="50%" stop-color="#6e3c15"/>
+      <stop offset="100%" stop-color="#422108"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Base Rounded Icon Frame -->
+  <rect width="512" height="512" rx="100" fill="url(#bg)"/>
+  <rect width="500" height="500" x="6" y="6" rx="94" fill="none" stroke="#00e5ff" stroke-width="4" stroke-opacity="0.35"/>
+
+  <!-- Radar Circles -->
+  <circle cx="256" cy="256" r="190" fill="url(#radar)"/>
+  <circle cx="256" cy="256" r="190" fill="none" stroke="#00e5ff" stroke-width="2" stroke-opacity="0.2" stroke-dasharray="6 6"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#00e5ff" stroke-width="2" stroke-opacity="0.35"/>
+  <circle cx="256" cy="256" r="70" fill="none" stroke="#00e5ff" stroke-width="2" stroke-opacity="0.5"/>
+
+  <!-- Crosshair Lines -->
+  <line x1="256" y1="60" x2="256" y2="452" stroke="#00e5ff" stroke-width="1.5" stroke-opacity="0.2"/>
+  <line x1="60" y1="256" x2="452" y2="256" stroke="#00e5ff" stroke-width="1.5" stroke-opacity="0.2"/>
+
+  <!-- 3D Ore Voxels / Wireframe Cubes in Rock -->
+  <!-- Copper (Left) -->
+  <g transform="translate(110, 310)">
+    <rect x="0" y="0" width="46" height="46" fill="#ea580c" fill-opacity="0.8" stroke="#fdba74" stroke-width="3"/>
+    <rect x="18" y="-18" width="46" height="46" fill="#c2410c" fill-opacity="0.5" stroke="#fb923c" stroke-width="2"/>
+  </g>
+
+  <!-- Gold (Center Bottom) -->
+  <g transform="translate(235, 360)">
+    <rect x="0" y="0" width="42" height="42" fill="#eab308" fill-opacity="0.8" stroke="#fef08a" stroke-width="3"/>
+  </g>
+
+  <!-- Iron (Right) -->
+  <g transform="translate(340, 300)">
+    <rect x="0" y="0" width="48" height="48" fill="#b91c1c" fill-opacity="0.8" stroke="#fca5a5" stroke-width="3"/>
+    <rect x="-14" y="16" width="36" height="36" fill="#991b1b" fill-opacity="0.5" stroke="#f87171" stroke-width="2"/>
+  </g>
+
+  <!-- REALISTIC MINING PICKAXE (Angled ~42 deg) -->
+  <g transform="translate(256, 256) rotate(42) translate(-256, -256)">
+    <!-- Wooden Handle -->
+    <rect x="245" y="140" width="22" height="280" rx="4" fill="url(#wood)" stroke="#1a0b02" stroke-width="2"/>
+    <rect x="243" y="405" width="26" height="15" rx="3" fill="#2d3748"/>
+
+    <!-- Cast Steel Pick Head Mount / Collar -->
+    <path d="M 239 162 L 273 162 L 270 188 L 242 188 Z" fill="#2d3748" stroke="#0f172a" stroke-width="2"/>
+    <rect x="249" y="138" width="14" height="14" rx="2" fill="#94a3b8"/>
+
+    <!-- Downward Curved Pick Head -->
+    <!-- Point 1 (left tip): (100, 245), Point 2 (center top): (256, 148), Point 3 (right tip): (412, 245) -->
+    <path d="M 100 245 
+             C 145 200, 205 160, 256 160 
+             C 307 160, 367 200, 412 245 
+             C 375 210, 310 182, 256 182 
+             C 202 182, 137 210, 100 245 Z" 
+          fill="url(#metal)" stroke="#111827" stroke-width="4"/>
+
+    <!-- Pick Blade Tips -->
+    <polygon points="100,245 116,236 112,248" fill="#f8fafc"/>
+    <polygon points="412,245 396,236 400,248" fill="#f8fafc"/>
+  </g>
+</svg>
